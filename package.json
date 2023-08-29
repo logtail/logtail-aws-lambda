@@ -1,0 +1,25 @@
+{
+  "name": "logtail-aws-lambda",
+  "type": "module",
+  "main": "index.js",
+  "version": "0.1.0",
+  "description": "AWS Lambda for forwarding CloudWatch logs to Better Stack",
+  "keywords": [
+    "aws",
+    "lambda",
+    "cloudwatch",
+    "logs",
+    "betterstack"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/logtail/logtail-aws-lambda"
+  },
+  "dependencies": {
+    "@logtail/node": "^0.4.6"
+  },
+  "scripts": {
+    "build": "build/build.sh"
+  },
+  "license": "MIT"
+}
