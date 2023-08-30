@@ -15,4 +15,4 @@ Please let us know at [hello@betterstack.com](mailto:hello@betterstack.com). We'
 
 ---
 
-[ISC license](./LICENSE)
+[MIT license](./LICENSE)
