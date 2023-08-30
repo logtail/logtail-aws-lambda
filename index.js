@@ -16,5 +16,7 @@ export async function handler(event, context) {
   console.debug("EVENT: \n" + JSON.stringify(event, null, 2))
   console.debug("CONTEXT: \n" + JSON.stringify(context, null, 2))
 
-  await Promise.all(parseRecords(event, context).map(record => logger.log(record.message, record.level, record.context)))
+  const records = await parseRecords(event, context)
+
+  return await Promise.all(records.map(record => logger.log(record.message, record.level, record.data)))
 }
