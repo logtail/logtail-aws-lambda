@@ -13,9 +13,6 @@ const logger = new Logtail(process.env.BETTER_STACK_SOURCE_TOKEN, options)
 
 // Main entrypoint for Lambda
 export async function handler(event, context) {
-  console.debug("EVENT: \n" + JSON.stringify(event, null, 2))
-  console.debug("CONTEXT: \n" + JSON.stringify(context, null, 2))
-
   const records = await parseRecords(event, context)
 
   return await Promise.all(records.map(record => logger.log(record.message, record.level, record.data)))
