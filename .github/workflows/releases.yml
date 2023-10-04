@@ -2,8 +2,7 @@ name: Releases
 
 on:
   push:
-    tags:
-      - '*'
+    branches: main
 
 jobs:
   release:
@@ -26,7 +25,17 @@ jobs:
       - name: Build ZIP archive
         run: npm run build
 
+      - name: Tag new version
+        id: tagger
+        uses: phish108/autotag-action@v1.1.64
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN}}
+          bump: minor
+          with-v: true
+          release-branch: main
+
       - name: Create release on Github
         uses: ncipollo/release-action@v1
         with:
+          tag: ${{ steps.tagger.outputs.new-tag }}
           artifacts: build/logtail-aws-lambda.zip
