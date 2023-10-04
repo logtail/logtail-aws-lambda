@@ -1,0 +1,32 @@
+name: Releases
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source code
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build ZIP archive
+        run: npm run build
+
+      - name: Create release on Github
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: build/logtail-aws-lambda.zip
