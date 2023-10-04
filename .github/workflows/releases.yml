@@ -37,5 +37,5 @@ jobs:
       - name: Create release on Github
         uses: ncipollo/release-action@v1
         with:
-          tag: ${{ steps.tagger.outputs.new-tag }}
+          tag: "v${{ steps.tagger.outputs.new-tag }}"
           artifacts: build/logtail-aws-lambda.zip
