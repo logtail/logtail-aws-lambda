@@ -26,6 +26,7 @@ jobs:
       - name: Build ZIP archive
         run: npm run build
 
-      - uses: ncipollo/release-action@v1
+      - name: Create release on Github
+        uses: ncipollo/release-action@v1
         with:
           artifacts: build/logtail-aws-lambda.zip
