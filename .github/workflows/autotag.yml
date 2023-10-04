@@ -17,5 +17,5 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN}}
           bump: minor
           with-v: true
-          release-branch: main,ph/autotag # remove ph/autotag when ready
+          release-branch: main,autotag # remove autotag when ready
           dry-run: true # remove when ready
