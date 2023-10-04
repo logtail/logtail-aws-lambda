@@ -1,0 +1,31 @@
+name: Build new version
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source code
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build ZIP archive
+        run: npm run build
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: zip
+          path: build/logtail-aws-lambda.zip
