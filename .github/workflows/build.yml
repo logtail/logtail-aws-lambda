@@ -1,0 +1,30 @@
+name: Build
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source code
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build ZIP archive
+        run: npm run build
+
+      - name: Check ZIP existence
+        uses: andstor/file-existence-action@v2
+        with:
+          files: build/logtail-aws-lambda.zip
+
+      - name: Check for uncommitted changes after build (eg. package-lock.json)
+        run: '[[ -z "$(git status --porcelain)" ]] || (git status; exit 1)'
