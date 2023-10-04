@@ -16,8 +16,7 @@
     "url": "https://github.com/logtail/logtail-aws-lambda"
   },
   "dependencies": {
-    "@logtail/node": "^0.4.6",
-    "@logtail/winston": "^0.4.6"
+    "@logtail/node": "^0.4.6"
   },
   "scripts": {
     "build": "build/build.sh"
