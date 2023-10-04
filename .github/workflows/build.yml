@@ -25,3 +25,6 @@ jobs:
         uses: andstor/file-existence-action@v2
         with:
           files: build/logtail-aws-lambda.zip
+
+      - name: Check for uncommitted changes after build (eg. package-lock.json)
+        uses: mskri/check-uncommitted-changes-action@v1
