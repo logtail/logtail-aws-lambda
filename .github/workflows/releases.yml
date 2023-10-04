@@ -1,13 +1,15 @@
-name: Build new version
+name: Releases
 
 on:
   push:
-  workflow_dispatch:
+    tags:
+      - '*'
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: write
     steps:
       - name: Check out source code
         uses: actions/checkout@v3
@@ -24,8 +26,6 @@ jobs:
       - name: Build ZIP archive
         run: npm run build
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+      - uses: ncipollo/release-action@v1
         with:
-          name: logtail-aws-lambda
-          path: build/logtail-aws-lambda.zip
+          artifacts: build/logtail-aws-lambda.zip
