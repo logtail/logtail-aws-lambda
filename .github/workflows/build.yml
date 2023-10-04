@@ -27,4 +27,4 @@ jobs:
           files: build/logtail-aws-lambda.zip
 
       - name: Check for uncommitted changes after build (eg. package-lock.json)
-        uses: mskri/check-uncommitted-changes-action@v1.0.1
+        run: '[[ -z "$(git status --porcelain)" ]] || (git status; exit 1)'
