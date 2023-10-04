@@ -27,5 +27,5 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: logtail-aws-lambda.zip
+          name: logtail-aws-lambda
           path: build/logtail-aws-lambda.zip
