@@ -17,4 +17,5 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN}}
           bump: minor
           with-v: true
+          prerelease: false
           dry-run: true # remove when ready
