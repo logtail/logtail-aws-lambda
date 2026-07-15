@@ -16,10 +16,14 @@
     "url": "https://github.com/logtail/logtail-aws-lambda"
   },
   "dependencies": {
-    "@logtail/node": "^0.4.6"
+    "@logtail/node": "^0.5.8"
+  },
+  "devDependencies": {
+    "@msgpack/msgpack": "^2.8.0"
   },
   "scripts": {
-    "build": "build/build.sh"
+    "build": "build/build.sh",
+    "test": "node --test"
   },
   "license": "MIT"
 }
