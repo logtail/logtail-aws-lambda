@@ -125,3 +125,55 @@ test("handler sends gzip-compressed MessagePack logs", async t => {
     request_id: requestId,
   })
 })
+
+test("handler rejects when ingesting fails, so AWS retries the invocation", async t => {
+  let requestCount = 0
+  const server = createServer((request, response) => {
+    request.on("data", () => {})
+    request.on("end", () => {
+      requestCount++
+      response.writeHead(500)
+      response.end()
+    })
+  })
+
+  server.listen(0, "127.0.0.1")
+  await once(server, "listening")
+
+  const previousToken = process.env.BETTER_STACK_SOURCE_TOKEN
+  const previousEntrypoint = process.env.BETTER_STACK_ENTRYPOINT
+  const { port } = server.address()
+
+  process.env.BETTER_STACK_SOURCE_TOKEN = "source-token"
+  process.env.BETTER_STACK_ENTRYPOINT = `http://127.0.0.1:${port}`
+
+  t.after(async () => {
+    if (previousToken === undefined) {
+      delete process.env.BETTER_STACK_SOURCE_TOKEN
+    } else {
+      process.env.BETTER_STACK_SOURCE_TOKEN = previousToken
+    }
+
+    if (previousEntrypoint === undefined) {
+      delete process.env.BETTER_STACK_ENTRYPOINT
+    } else {
+      process.env.BETTER_STACK_ENTRYPOINT = previousEntrypoint
+    }
+
+    await new Promise((resolve, reject) => {
+      server.close(error => error ? reject(error) : resolve())
+    })
+  })
+
+  const event = { source: "unknown" }
+  const context = {
+    functionName: "forward-cloudwatch-logs",
+    invokedFunctionArn: "arn:aws:lambda:eu-west-1:123456789012:function:forward-cloudwatch-logs",
+  }
+
+  // Query string busts the module cache so the logger is created with this test's entrypoint
+  const { handler } = await import("../index.js?failing-ingest")
+  await assert.rejects(handler(event, context))
+
+  assert.ok(requestCount >= 1)
+})

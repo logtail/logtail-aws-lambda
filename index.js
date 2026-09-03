@@ -5,7 +5,8 @@ import { parseRecords } from "./src/parser.js"
 if (!process.env.BETTER_STACK_SOURCE_TOKEN) {
   throw new Error("Better Stack source token has not been set in ENV variable BETTER_STACK_SOURCE_TOKEN.")
 }
-const options = {}
+// Fail the Lambda invocation when logs can't be delivered, so AWS retries it
+const options = { throwExceptions: true }
 if (process.env.BETTER_STACK_ENTRYPOINT) {
   options.endpoint = process.env.BETTER_STACK_ENTRYPOINT
 }
