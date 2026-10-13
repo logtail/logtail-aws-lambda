@@ -52,7 +52,25 @@ function parseRecord(record, context) {
   // Remove line separators from the end
   record.message = record.message.replace(/[\n\r]+$/, "")
 
+  // Extract level from a JSON message (eg. Lambda JSON log format or a structured logger)
+  const jsonLevel = parseJsonMessage(record.message)?.level
+  if (typeof jsonLevel === "string" && jsonLevel !== "") {
+    record.data.level = jsonLevel.toLowerCase()
+  }
+
   return record
+}
+
+function parseJsonMessage(message) {
+  if (!message.startsWith("{")) {
+    return null
+  }
+
+  try {
+    return JSON.parse(message)
+  } catch {
+    return null
+  }
 }
 
 async function parseBasicRecords(event) {

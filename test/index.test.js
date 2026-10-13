@@ -28,6 +28,51 @@ test("parseRecords adds Lambda context to unknown events", async () => {
   ])
 })
 
+const lambdaContext = {
+  functionName: "forward-cloudwatch-logs",
+  invokedFunctionArn: "arn:aws:lambda:eu-west-1:123456789012:function:forward-cloudwatch-logs",
+}
+
+async function parseCloudWatchMessage(message) {
+  const cloudWatchPayload = {
+    messageType: "DATA_MESSAGE",
+    owner: "123456789012",
+    logGroup: "/aws/lambda/example",
+    logStream: "2026/07/15/[$LATEST]abcdef",
+    logEvents: [{ id: "event-id", timestamp: Date.parse("2026-07-15T10:30:00.000Z"), message }],
+  }
+  const event = { awslogs: { data: gzipSync(JSON.stringify(cloudWatchPayload)).toString("base64") } }
+  const [record] = await parseRecords(event, lambdaContext)
+
+  return record
+}
+
+test("parseRecords takes the level from a JSON message (Lambda JSON log format)", async () => {
+  const message = '{"timestamp":"2026-07-15T10:30:00.000Z","level":"ERROR","requestId":"123e4567-e89b-12d3-a456-426614174000","message":"Payment failed"}'
+  const record = await parseCloudWatchMessage(message)
+
+  assert.equal(record.data.level, "error")
+  assert.equal(record.message, message)
+})
+
+test("parseRecords prefers the JSON message level over the level prefix (Lambda text log format)", async () => {
+  const message = '2026-07-15T10:30:00.000Z\t123e4567-e89b-12d3-a456-426614174000\tINFO\t{"level":"warn","msg":"Slow query","durationMs":1200}\n'
+  const record = await parseCloudWatchMessage(message)
+
+  assert.equal(record.data.level, "warn")
+  assert.equal(record.message, '{"level":"warn","msg":"Slow query","durationMs":1200}')
+})
+
+test("parseRecords keeps the level when the JSON message has no string level", async () => {
+  assert.equal((await parseCloudWatchMessage('INFO {"message":"No level here"}')).data.level, "info")
+  assert.equal((await parseCloudWatchMessage('INFO {"level":50,"msg":"Numeric pino level"}')).data.level, "info")
+  assert.equal((await parseCloudWatchMessage('INFO {"level":"","msg":"Empty level"}')).data.level, "info")
+  assert.equal((await parseCloudWatchMessage('INFO ["level","not an object"]')).data.level, "info")
+  assert.equal((await parseCloudWatchMessage("INFO null")).data.level, "info")
+  assert.equal((await parseCloudWatchMessage('INFO {"level":"error" broken json')).data.level, "info")
+  assert.equal((await parseCloudWatchMessage("Plain text message")).data.level, undefined)
+})
+
 test("handler sends gzip-compressed MessagePack logs", async t => {
   const requests = []
   const server = createServer((request, response) => {
