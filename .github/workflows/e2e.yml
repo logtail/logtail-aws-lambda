@@ -114,7 +114,7 @@ jobs:
           echo "logtail-aws-lambda ${RELEASE_TAG:-unknown} with @logtail/node $CLIENT_VERSION, $(stat -c %s logtail-aws-lambda.zip) bytes from $ZIP_FROM"
 
       - name: "[Setup] AWS credentials (OIDC)"
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
