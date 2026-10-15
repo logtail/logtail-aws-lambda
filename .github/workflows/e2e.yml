@@ -263,13 +263,14 @@ jobs:
             CODE=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "$API/api/v1/sources/$id" -H "Authorization: Bearer $TEST_TEAM_TELEMETRY_API")
             [ "$CODE" = 204 ] && say "- deleted source $id \`$name\`" || { say "- ❌ could not delete source $id \`$name\` (HTTP $CODE)"; touch cleanup.failed; }
           done <<<"$SOURCES"
-          FUNCTIONS=$(aws lambda list-functions --query "Functions[?starts_with(FunctionName, 'e2e-')].[FunctionName,LastModified]" --output json \
+          # Runs are named e2e-gh<run id>a<attempt>; nothing else in the account starts with that.
+          FUNCTIONS=$(aws lambda list-functions --query "Functions[?starts_with(FunctionName, 'e2e-gh')].[FunctionName,LastModified]" --output json \
             | jq -r --arg name "$FUNCTION_NAME" --arg before "$STALE_BEFORE" '.[] | select(.[0] == $name or .[1] < $before) | .[0]') || { could_not_list Lambdas; FUNCTIONS=""; }
           for fn in $FUNCTIONS; do
             if aws lambda delete-function --function-name "$fn"; then say "- deleted Lambda \`$fn\`"; else say "- ❌ could not delete Lambda \`$fn\`"; touch cleanup.failed; fi
           done
           LOG_GROUPS=$(aws logs describe-log-groups --query 'logGroups[].[logGroupName,creationTime]' --output json \
-            | jq -r --arg mine "$LOG_GROUP" --arg fn "/aws/lambda/$FUNCTION_NAME" --argjson before "$(( $(date -u -d '-2 hours' +%s) * 1000 ))" '.[] | select(((.[0] | startswith("/e2e/")) or (.[0] | startswith("/aws/lambda/e2e-"))) and (.[0] == $mine or .[0] == $fn or .[1] < $before)) | .[0]') || { could_not_list "log groups"; LOG_GROUPS=""; }
+            | jq -r --arg mine "$LOG_GROUP" --arg fn "/aws/lambda/$FUNCTION_NAME" --argjson before "$(( $(date -u -d '-2 hours' +%s) * 1000 ))" '.[] | select(((.[0] | startswith("/e2e/gh")) or (.[0] | startswith("/aws/lambda/e2e-gh"))) and (.[0] == $mine or .[0] == $fn or .[1] < $before)) | .[0]') || { could_not_list "log groups"; LOG_GROUPS=""; }
           for group in $LOG_GROUPS; do
             if aws logs delete-log-group --log-group-name "$group"; then say "- deleted log group \`$group\`"; else say "- ❌ could not delete log group \`$group\`"; touch cleanup.failed; fi
           done
