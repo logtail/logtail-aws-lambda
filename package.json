@@ -16,7 +16,7 @@
     "url": "https://github.com/logtail/logtail-aws-lambda"
   },
   "dependencies": {
-    "@logtail/node": "^0.5.8"
+    "@logtail/node": "^0.5.12"
   },
   "devDependencies": {
     "@msgpack/msgpack": "^2.8.0"
