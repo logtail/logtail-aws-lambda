@@ -3,6 +3,13 @@ name: Releases
 on:
   push:
     branches: main
+    # Only what makes up the Lambda ZIP cuts a release (README.md and LICENSE ride along in it but do not count)
+    paths:
+      - index.js
+      - src/**
+      - package.json
+      - package-lock.json
+      - build/build.sh
 
 jobs:
   release:
