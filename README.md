@@ -4,6 +4,7 @@
 
 [![MIT License](https://img.shields.io/badge/license-MIT-ff69b4.svg)](./LICENSE)
 [![Build](https://github.com/logtail/logtail-aws-lambda/actions/workflows/build.yml/badge.svg)](https://github.com/logtail/logtail-aws-lambda/actions/workflows/build.yml)
+[![E2E](https://github.com/logtail/logtail-aws-lambda/actions/workflows/e2e.yml/badge.svg)](https://github.com/logtail/logtail-aws-lambda/actions/workflows/e2e.yml)
 
 Forward your logs from CloudWatch to Better Stack via an AWS Lambda [Learn more ⇗](https://betterstack.com/logs)
 

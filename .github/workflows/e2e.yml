@@ -1,0 +1,293 @@
+name: E2E
+
+# Checks the CloudWatch → Lambda → Better Stack setup from our docs end to end in a throwaway AWS account: creates an
+# AWS CloudWatch source, creates a Lambda from the ZIP with the runtime, architecture and environment variables the docs
+# name, subscribes a log group to it the way the docs describe, writes 20 log lines into the group and compares every
+# stored row with the CloudWatch event that produced it through the team's SQL API connection. The Lambda's own log
+# group must stay free of errors. Pull requests and pushes to main build the ZIP from the checkout; the daily schedule
+# deploys the released ZIP the docs link to. Everything the run creates is named after RUN_ID and deleted in the cleanup
+# step, together with leftovers of earlier runs older than two hours. Pull requests from forks are skipped: they get no
+# OIDC token.
+# See the docs guide in https://betterstack.com/docs/logs/aws-cloudwatch/
+#
+# AWS account: better-stack-e2e-lambda (352333568934), a member of the Better Stack organization that holds nothing but
+# this test. Root sign-in: 1Password, Engineering vault, item "AWS better-stack-e2e-lambda". The standing resources are
+# the CloudFormation stack `e2e-bootstrap`: a GitHub OIDC provider, IAM role `github-actions-e2e` trusting this
+# repository, and IAM role `e2e-lambda-exec` that the test's Lambda runs as (kept standing because a role created
+# seconds before `lambda create-function` is refused until IAM propagates it).
+# Secrets: TEST_TEAM_TELEMETRY_API, TEST_TEAM_CONNECTION_USERNAME, TEST_TEAM_CONNECTION_PASSWORD (the E2E testing team),
+# LINEAR_* (see notify_linear_failure.yml).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '30 5 * * *'
+  workflow_dispatch:
+    inputs:
+      zip_url:
+        description: 'Lambda ZIP to deploy instead of the checkout build (e.g. a GitHub release asset)'
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ROLE_ARN: arn:aws:iam::352333568934:role/github-actions-e2e
+  LAMBDA_ROLE_ARN: arn:aws:iam::352333568934:role/e2e-lambda-exec
+  API: https://telemetry.betterstack.com
+  DOCS_URL: https://betterstack.com/docs/logs/aws-cloudwatch/
+  RUN_ID: gh${{ github.run_id }}a${{ github.run_attempt }}
+  SOURCE_PREFIX: e2e-aws-cloudwatch-lambda
+  FUNCTION_NAME: e2e-gh${{ github.run_id }}a${{ github.run_attempt }}
+  LOG_GROUP: /e2e/gh${{ github.run_id }}a${{ github.run_attempt }}
+  MARKER: e2e run_id=gh${{ github.run_id }}a${{ github.run_attempt }}
+  ZIP_URL_OVERRIDE: ${{ inputs.zip_url }}
+  TEST_TEAM_TELEMETRY_API: ${{ secrets.TEST_TEAM_TELEMETRY_API }}
+  TEST_TEAM_CONNECTION_USERNAME: ${{ secrets.TEST_TEAM_CONNECTION_USERNAME }}
+  TEST_TEAM_CONNECTION_PASSWORD: ${{ secrets.TEST_TEAM_CONNECTION_PASSWORD }}
+
+jobs:
+  test:
+    name: CloudWatch round trip
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: "[Setup] Checkout code"
+        uses: actions/checkout@v7
+
+      - name: "[Setup] Node.js"
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: "[Check] Docs article names the ZIP, runtime, architecture, environment variables and subscription filter"
+        run: |
+          curl -sSfL "$DOCS_URL" -o docs.html
+          ZIP_URL=$(grep -oE 'https://github.com/logtail/logtail-aws-lambda/releases/latest/download/[A-Za-z0-9._-]+\.zip' docs.html | head -1)
+          RUNTIME_LABEL=$(grep -oE 'Runtime: <code[^>]*>[^<]+</code>' docs.html | head -1 | sed -E 's#.*<code[^>]*>([^<]+)</code>.*#\1#')
+          RUNTIME=$(sed -nE 's/^Node\.js ([0-9]+)\.x$/nodejs\1.x/p' <<<"$RUNTIME_LABEL")
+          MISSING=""
+          [ -n "$ZIP_URL" ] || MISSING="$MISSING zip-download-link"
+          [ -n "$RUNTIME" ] || MISSING="$MISSING runtime(got:'$RUNTIME_LABEL')"
+          for text in 'Architecture: <code[^>]*>x86_64<' BETTER_STACK_ENTRYPOINT BETTER_STACK_SOURCE_TOKEN 'Create Lambda subscription filter' 'Log format: <code[^>]*>JSON<'; do
+            grep -qE "$text" docs.html || MISSING="$MISSING '$text'"
+          done
+          [ -z "$MISSING" ] || { echo "::error::$DOCS_URL changed, this test no longer matches it, missing:$MISSING"; exit 1; }
+          echo "DOCS_ZIP_URL=$ZIP_URL" >> "$GITHUB_ENV"
+          echo "RUNTIME=$RUNTIME" >> "$GITHUB_ENV"
+          echo "docs: $ZIP_URL on $RUNTIME_LABEL ($RUNTIME), x86_64"
+
+      - name: "[Setup] The Lambda ZIP: built from this checkout, or the released one on the schedule"
+        run: |
+          if [ -n "$ZIP_URL_OVERRIDE" ]; then
+            curl -sSfL "$ZIP_URL_OVERRIDE" -o logtail-aws-lambda.zip
+            ZIP_FROM="$ZIP_URL_OVERRIDE"
+            # An explicit asset URL carries its tag; the latest-release URL redirects to releases/download/<tag>/...
+            RELEASE_TAG=$(sed -nE 's#.*/releases/download/([^/]+)/.*#\1#p' <<<"$ZIP_URL_OVERRIDE")
+            [ -n "$RELEASE_TAG" ] || RELEASE_TAG=$(curl -sSI "$ZIP_URL_OVERRIDE" | tr -d '\r' | sed -nE 's#^[Ll]ocation: .*/releases/download/([^/]+)/.*#\1#p' | head -1)
+          elif [ "${{ github.event_name }}" = schedule ]; then
+            curl -sSfL "$DOCS_ZIP_URL" -o logtail-aws-lambda.zip
+            ZIP_FROM="$DOCS_ZIP_URL"
+            RELEASE_TAG=$(curl -sSI "$DOCS_ZIP_URL" | tr -d '\r' | sed -nE 's#^[Ll]ocation: .*/releases/download/([^/]+)/.*#\1#p' | head -1)
+            [ -n "$RELEASE_TAG" ] || { echo "::error::could not tell the release tag behind $DOCS_ZIP_URL"; exit 1; }
+          else
+            npm ci
+            npm run build
+            cp build/logtail-aws-lambda.zip logtail-aws-lambda.zip
+            ZIP_FROM="this checkout"
+            RELEASE_TAG="$(git rev-parse --short HEAD)"
+          fi
+          unzip -l logtail-aws-lambda.zip | grep -qE ' index\.js$' || { echo "::error::the ZIP contains no index.js"; unzip -l logtail-aws-lambda.zip | head; exit 1; }
+          CLIENT_VERSION=$(unzip -p logtail-aws-lambda.zip node_modules/@logtail/node/package.json | jq -r '.version // empty')
+          [ -n "$CLIENT_VERSION" ] || { echo "::error::the ZIP bundles no node_modules/@logtail/node/package.json"; exit 1; }
+          echo "ZIP_FROM=$ZIP_FROM" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=${RELEASE_TAG:-unknown}" >> "$GITHUB_ENV"
+          echo "CLIENT_VERSION=$CLIENT_VERSION" >> "$GITHUB_ENV"
+          echo "logtail-aws-lambda ${RELEASE_TAG:-unknown} with @logtail/node $CLIENT_VERSION, $(stat -c %s logtail-aws-lambda.zip) bytes from $ZIP_FROM"
+
+      - name: "[Setup] AWS credentials (OIDC)"
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: "[Setup] Create AWS CloudWatch source"
+        run: |
+          RES=$(curl -sS -X POST "$API/api/v1/sources" -H "Authorization: Bearer $TEST_TEAM_TELEMETRY_API" -H 'Content-Type: application/json' \
+            -d "$(jq -nc --arg name "$SOURCE_PREFIX $RUN_ID" '{name: $name, platform: "aws_cloudwatch"}')")
+          jq -e '.data.id' <<<"$RES" >/dev/null || { echo "::error::creating the source failed: $RES"; exit 1; }
+          SOURCE_TOKEN=$(jq -r '.data.attributes.token' <<<"$RES")
+          echo "::add-mask::$SOURCE_TOKEN"
+          {
+            echo "SOURCE_ID=$(jq -r '.data.id' <<<"$RES")"
+            echo "SOURCE_TOKEN=$SOURCE_TOKEN"
+            echo "INGESTING_HOST=$(jq -r '.data.attributes.ingesting_host' <<<"$RES")"
+            echo "COLLECTION=t$(jq -r '.data.attributes.team_id' <<<"$RES")_$(jq -r '.data.attributes.table_name' <<<"$RES")"
+            echo "CONNECT_HOST=$(jq -r '.data.attributes.data_region' <<<"$RES")-connect.betterstackdata.com"
+            echo "ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)"
+          } >> "$GITHUB_ENV"
+          echo "source $(jq -r '.data.id' <<<"$RES") on $(jq -r '.data.attributes.data_region' <<<"$RES")"
+
+      # A fresh token reaches the ingesters with a delay; until then they answer 401 and the Lambda would drop or retry
+      # its batches. Send warm-up lines until 20 in a row are accepted, then let it settle.
+      - name: "[Setup] Warm up the source until ingest accepts its token"
+        run: |
+          STREAK=0
+          DEADLINE=$((SECONDS + 300))
+          while [ "$STREAK" -lt 20 ]; do
+            CODE=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "https://$INGESTING_HOST/" -H "Authorization: Bearer $SOURCE_TOKEN" -H 'Content-Type: application/json' -d "{\"message\":\"e2e warm-up run_id=$RUN_ID\"}")
+            if [ "$CODE" = 202 ]; then STREAK=$((STREAK + 1)); else echo "ingest answered HTTP $CODE after $STREAK accepted"; STREAK=0; fi
+            [ "$SECONDS" -lt "$DEADLINE" ] || { echo "::error::ingest did not accept the source token 20 times in a row within 5 min"; exit 1; }
+            sleep 1
+          done
+          sleep 15
+          echo "ingest accepts the token"
+
+      - name: "[Test] Create the Lambda from the ZIP with the documented settings"
+        run: |
+          # The response would echo the environment variables, token included; nothing of it is needed.
+          aws lambda create-function --function-name "$FUNCTION_NAME" --runtime "$RUNTIME" --architectures x86_64 --role "$LAMBDA_ROLE_ARN" \
+            --handler index.handler --zip-file fileb://logtail-aws-lambda.zip --timeout 30 \
+            --environment "Variables={BETTER_STACK_ENTRYPOINT=https://$INGESTING_HOST,BETTER_STACK_SOURCE_TOKEN=$SOURCE_TOKEN}" >/dev/null
+          aws lambda wait function-active-v2 --function-name "$FUNCTION_NAME"
+          echo "FUNCTION_ARN=$(aws lambda get-function --function-name "$FUNCTION_NAME" --query Configuration.FunctionArn --output text)" >> "$GITHUB_ENV"
+
+      - name: "[Test] Subscribe a log group to the Lambda"
+        run: |
+          aws logs create-log-group --log-group-name "$LOG_GROUP"
+          aws logs create-log-stream --log-group-name "$LOG_GROUP" --log-stream-name run
+          aws lambda add-permission --function-name "$FUNCTION_NAME" --statement-id e2e-logs --action lambda:InvokeFunction --principal logs.amazonaws.com \
+            --source-arn "arn:aws:logs:$AWS_REGION:$ACCOUNT_ID:log-group:$LOG_GROUP:*" --source-account "$ACCOUNT_ID" >/dev/null
+          aws logs put-subscription-filter --log-group-name "$LOG_GROUP" --filter-name logtail-aws-lambda-filter --filter-pattern "" --destination-arn "$FUNCTION_ARN"
+
+      - name: "[Test] Write 20 log lines, 5 of them with an [ERROR] level prefix"
+        run: |
+          echo "SINCE=dt > toDateTime('$(date -u -d '-10 minutes' '+%F %T')')" >> "$GITHUB_ENV"
+          jq -nc --arg m "$MARKER" '[range(1; 21) as $n | {timestamp: ((now * 1000 | floor) + $n), message: (if $n <= 5 then "[ERROR] \($m) n=\($n)" else "\($m) n=\($n)" end)}]' > events.json
+          aws logs put-log-events --log-group-name "$LOG_GROUP" --log-stream-name run --log-events file://events.json >/dev/null
+
+      - name: "[Test] Read the lines back through the SQL API connection"
+        run: |
+          set -o pipefail
+          sql() {
+            CODE=$(curl -sS -o response.json -w '%{http_code}' -u "$TEST_TEAM_CONNECTION_USERNAME:$TEST_TEAM_CONNECTION_PASSWORD" -H 'Content-Type: plain/text' --data-binary "$1 FORMAT JSONEachRow" "https://$CONNECT_HOST/")
+            # A source's collection exists only from its first stored row on; until then the query is "no rows yet".
+            [ "$CODE" = 500 ] && grep -q CLUSTER_DOESNT_EXIST response.json && return 0
+            [ "$CODE" = 200 ] || { echo "::error::SQL API on $CONNECT_HOST answered HTTP $CODE: $(head -c 300 response.json)" >&2; return 1; }
+            cat response.json
+          }
+          count() { ROWS=$(sql "SELECT count() AS n FROM remote(${COLLECTION}_logs) WHERE $SINCE AND position(raw, '$MARKER') > 0 $1") || return 1; [ -n "$ROWS" ] && jq -r '.n' <<<"$ROWS" || echo 0; }
+          counts() {
+            TOTAL=$(count "")
+            ERRORS=$(count "AND JSONExtractString(raw, 'level') = 'error'")
+            INFOS=$(count "AND JSONExtractString(raw, 'level') = 'info'")
+            NAMED=$(count "AND JSONExtractString(raw, 'context', 'logger_lambda_name') = '$FUNCTION_NAME'")
+            echo "rows $TOTAL/20, level error $ERRORS/5, level info $INFOS/15, lambda name $NAMED/20"
+          }
+          DEADLINE=$((SECONDS + 300))
+          while :; do
+            counts
+            [ "$TOTAL" -ge 20 ] && break
+            [ "$SECONDS" -lt "$DEADLINE" ] || { echo "::error::only $TOTAL of 20 lines arrived within 5 min"; exit 1; }
+            sleep 15
+          done
+          # Everything arrived; a last look 30 s later catches duplicate delivery.
+          sleep 30
+          counts
+          [ "$TOTAL" = 20 ] && [ "$ERRORS" = 5 ] && [ "$INFOS" = 15 ] && [ "$NAMED" = 20 ] || { echo "::error::unexpected rows: total $TOTAL (20), error $ERRORS (5), info $INFOS (15), lambda name $NAMED (20)"; exit 1; }
+          mkdir -p out
+          sql "SELECT * FROM remote(${COLLECTION}_logs) WHERE $SINCE AND position(raw, '$MARKER') > 0 ORDER BY dt LIMIT 2" > out/sample_log.json
+          # Every stored row, field by field, against the event that produced it (events.json from the write step):
+          # the level prefix stripped from the message, the level, the CloudWatch timestamp as dt, and the context
+          # the Lambda's parser builds. The key sets are exact, so a new or renamed field fails here.
+          sql "SELECT toUnixTimestamp64Milli(dt) AS dt_ms, raw FROM remote(${COLLECTION}_logs) WHERE $SINCE AND position(raw, '$MARKER') > 0 ORDER BY dt" > rows.jsonl
+          PROBLEMS=$(jq -rs --slurpfile sent events.json --arg fn "$FUNCTION_NAME" --arg arn "$FUNCTION_ARN" --arg group "$LOG_GROUP" --arg owner "$ACCOUNT_ID" --arg marker "$MARKER" '
+            map(.raw |= fromjson)
+            | map(
+                (.raw.message | capture("n=(?<n>[0-9]+)$") | .n | tonumber) as $n
+                | $sent[0][$n - 1] as $event
+                | [
+                    (if (.raw | keys) != ["context", "dt", "level", "message"] then "keys \(.raw | keys | join("/"))" else empty end),
+                    (if .raw.message != "\($marker) n=\($n)" then "message \(.raw.message | tojson)" else empty end),
+                    (if .raw.level != (if $n <= 5 then "error" else "info" end) then "level \(.raw.level)" else empty end),
+                    (if (.dt_ms | tonumber) != $event.timestamp then "dt \(.dt_ms) ms, sent \($event.timestamp)" else empty end),
+                    (if (.raw.context | keys) != ["log_group", "log_id", "log_stream", "logger_lambda_arn", "logger_lambda_name", "owner"] then "context keys \(.raw.context | keys | join("/"))" else empty end),
+                    (if .raw.context.logger_lambda_name != $fn then "logger_lambda_name \(.raw.context.logger_lambda_name)" else empty end),
+                    (if .raw.context.logger_lambda_arn != $arn then "logger_lambda_arn \(.raw.context.logger_lambda_arn)" else empty end),
+                    (if .raw.context.owner != $owner then "owner \(.raw.context.owner)" else empty end),
+                    (if .raw.context.log_group != $group then "log_group \(.raw.context.log_group)" else empty end),
+                    (if .raw.context.log_stream != "run" then "log_stream \(.raw.context.log_stream)" else empty end),
+                    (if (.raw.context.log_id | type) != "string" or .raw.context.log_id == "" then "log_id \(.raw.context.log_id)" else empty end)
+                  ] as $problems
+                | select($problems | length > 0) | "n=\($n): \($problems | join(", "))")
+            | .[]' rows.jsonl)
+          [ -z "$PROBLEMS" ] || { echo "::error::stored rows differ from what the Lambda should have produced:"; echo "$PROBLEMS"; exit 1; }
+          {
+            echo "### AWS CloudWatch Lambda E2E \`$RUN_ID\`"
+            echo
+            echo "- logtail-aws-lambda \`$RELEASE_TAG\` from $ZIP_FROM, bundling @logtail/node \`$CLIENT_VERSION\`"
+            echo "- source $SOURCE_ID, Lambda \`$FUNCTION_NAME\` on \`$RUNTIME\` x86_64"
+            echo "- read back through \`$CONNECT_HOST\`: $TOTAL rows, $ERRORS error, $INFOS info; every row matches its CloudWatch event in message, level, timestamp and context"
+            echo
+            echo "✅ CloudWatch → Lambda → Better Stack round trip"
+          } > out/summary.md
+
+      - name: "[Test] The Lambda logged no errors"
+        run: |
+          ERRORS=$(aws logs filter-log-events --log-group-name "/aws/lambda/$FUNCTION_NAME" --filter-pattern '?ERROR ?"Task timed out" ?Unhandled' --query 'events[].message' --output text)
+          [ -z "$ERRORS" ] || { echo "::error::the Lambda logged errors:"; echo "$ERRORS"; exit 1; }
+          echo "no errors in /aws/lambda/$FUNCTION_NAME"
+
+      - name: "[Cleanup] Delete this run's resources in Better Stack and AWS (and stale ones)"
+        if: ${{ always() }}
+        run: |
+          set -o pipefail
+          mkdir -p out
+          say() { echo "$1"; echo "$1" >> out/cleanup.md; }
+          could_not_list() { say "- ❌ could not list $1, so none were deleted"; touch cleanup.failed; }
+          say "### Cleanup"
+          say ""
+          STALE_BEFORE=$(date -u -d '-2 hours' +%FT%TZ)
+          SOURCES=$(curl -sS --fail-with-body "$API/api/v1/sources?name=$SOURCE_PREFIX&per_page=250" -H "Authorization: Bearer $TEST_TEAM_TELEMETRY_API" \
+            | jq -r --arg run " $RUN_ID" --arg before "$STALE_BEFORE" '.data[] | select((.attributes.name | endswith($run)) or .attributes.created_at < $before) | "\(.id) \(.attributes.name)"') || { could_not_list sources; SOURCES=""; }
+          while read -r id name; do
+            [ -n "$id" ] || continue
+            CODE=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "$API/api/v1/sources/$id" -H "Authorization: Bearer $TEST_TEAM_TELEMETRY_API")
+            [ "$CODE" = 204 ] && say "- deleted source $id \`$name\`" || { say "- ❌ could not delete source $id \`$name\` (HTTP $CODE)"; touch cleanup.failed; }
+          done <<<"$SOURCES"
+          # Runs are named e2e-gh<run id>a<attempt>; nothing else in the account starts with that.
+          FUNCTIONS=$(aws lambda list-functions --query "Functions[?starts_with(FunctionName, 'e2e-gh')].[FunctionName,LastModified]" --output json \
+            | jq -r --arg name "$FUNCTION_NAME" --arg before "$STALE_BEFORE" '.[] | select(.[0] == $name or .[1] < $before) | .[0]') || { could_not_list Lambdas; FUNCTIONS=""; }
+          for fn in $FUNCTIONS; do
+            if aws lambda delete-function --function-name "$fn"; then say "- deleted Lambda \`$fn\`"; else say "- ❌ could not delete Lambda \`$fn\`"; touch cleanup.failed; fi
+          done
+          LOG_GROUPS=$(aws logs describe-log-groups --query 'logGroups[].[logGroupName,creationTime]' --output json \
+            | jq -r --arg mine "$LOG_GROUP" --arg fn "/aws/lambda/$FUNCTION_NAME" --argjson before "$(( $(date -u -d '-2 hours' +%s) * 1000 ))" '.[] | select(((.[0] | startswith("/e2e/gh")) or (.[0] | startswith("/aws/lambda/e2e-gh"))) and (.[0] == $mine or .[0] == $fn or .[1] < $before)) | .[0]') || { could_not_list "log groups"; LOG_GROUPS=""; }
+          for group in $LOG_GROUPS; do
+            if aws logs delete-log-group --log-group-name "$group"; then say "- deleted log group \`$group\`"; else say "- ❌ could not delete log group \`$group\`"; touch cleanup.failed; fi
+          done
+          [ "$(wc -l < out/cleanup.md)" -gt 2 ] || say "- nothing to delete"
+          [ ! -f cleanup.failed ] || { say ""; say "❌ cleanup left resources behind"; exit 1; }
+
+      - name: "[Report] Job summary"
+        if: ${{ always() }}
+        run: |
+          if [ -f out/summary.md ]; then cat out/summary.md >> "$GITHUB_STEP_SUMMARY"; else echo "No summary, the run failed before verification." >> "$GITHUB_STEP_SUMMARY"; fi
+          # Rows come back as JSONEachRow with the stored event as a JSON string in raw; render them as a pretty array.
+          [ -f out/sample_log.json ] && { echo; echo '<details><summary>sample_log.json</summary>'; echo; echo '```json'; jq -s 'map(if has("raw") then .raw |= (fromjson? // .) else . end)' out/sample_log.json; echo '```'; echo '</details>'; echo; } >> "$GITHUB_STEP_SUMMARY"
+          [ -f out/cleanup.md ] && { echo; cat out/cleanup.md; } >> "$GITHUB_STEP_SUMMARY"
+          true
+
+  notify-linear:
+    if: ${{ failure() && (github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
+    needs: [test]
+    uses: ./.github/workflows/notify_linear_failure.yml
+    secrets: inherit
