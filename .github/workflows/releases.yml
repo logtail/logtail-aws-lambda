@@ -42,3 +42,4 @@ jobs:
         with:
           tag: "v${{ steps.tagger.outputs.new-tag }}"
           artifacts: build/logtail-aws-lambda.zip
+          generateReleaseNotes: true
