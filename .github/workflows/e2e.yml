@@ -12,9 +12,9 @@ name: E2E
 #
 # AWS account: better-stack-e2e-lambda (352333568934), a member of the Better Stack organization that holds nothing but
 # this test. Root sign-in: 1Password, Engineering vault, item "AWS better-stack-e2e-lambda". The standing resources are
-# the CloudFormation stack `e2e-bootstrap` from e2e/bootstrap.yaml: a GitHub OIDC provider, IAM role `github-actions-e2e`
-# trusting this repository, and IAM role `e2e-lambda-exec` that the test's Lambda runs as (kept standing because a role
-# created seconds before `lambda create-function` is refused until IAM propagates it).
+# the CloudFormation stack `e2e-bootstrap`: a GitHub OIDC provider, IAM role `github-actions-e2e` trusting this
+# repository, and IAM role `e2e-lambda-exec` that the test's Lambda runs as (kept standing because a role created
+# seconds before `lambda create-function` is refused until IAM propagates it).
 # Secrets: TEST_TEAM_TELEMETRY_API, TEST_TEAM_CONNECTION_USERNAME, TEST_TEAM_CONNECTION_PASSWORD (the E2E testing team),
 # LINEAR_* (see notify_linear_failure.yml).
 
