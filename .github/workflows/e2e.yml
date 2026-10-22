@@ -189,12 +189,12 @@ jobs:
               echo "❌ ${FAILURE:-The read-back stopped on an error, see the log of this step}"
               if [ -n "${TOTAL:-}" ]; then
                 echo
-                echo "| read back through \`$CONNECT_HOST\` | arrived | expected |"
-                echo "|---|---|---|"
-                echo "| rows | $TOTAL | 20 |"
-                echo "| level error | $ERRORS | 5 |"
-                echo "| level info | $INFOS | 15 |"
-                echo "| lambda name \`$FUNCTION_NAME\` | $NAMED | 20 |"
+                echo "Read back through \`$CONNECT_HOST\`:"
+                echo
+                echo "- rows: $TOTAL of 20"
+                echo "- level error: $ERRORS of 5"
+                echo "- level info: $INFOS of 15"
+                echo "- lambda name \`$FUNCTION_NAME\`: $NAMED of 20"
               fi
               [ -z "${PROBLEMS:-}" ] || { echo; echo '```'; head -20 <<<"$PROBLEMS"; echo '```'; }
             } > out/summary.md
@@ -309,18 +309,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p report
           if [ -f out/summary.md ]; then
-            cp out/summary.md report/summary.md
+            cat out/summary.md >> "$GITHUB_STEP_SUMMARY"
+            # The Linear issue names the job and links the run, so it gets the summary without its heading, and the
+            # cleanup only when that left something behind. Without a summary it gets the job's errors instead.
+            mkdir -p report
+            tail -n +3 out/summary.md > report/summary.md
+            grep -q '❌' out/cleanup.md 2>/dev/null && { echo; cat out/cleanup.md; } >> report/summary.md
           else
             # The read-back writes the summary however it ends, so a step before it failed (or the job was cancelled).
             FAILED_STEP=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" \
               --jq ".jobs[] | select(.runner_name == \"$RUNNER_NAME\") | .steps[] | select(.conclusion == \"failure\") | .name" | head -1) || true
-            { echo "### AWS CloudWatch Lambda E2E \`$RUN_ID\`"; echo; echo "❌ Stopped${FAILED_STEP:+ at **$FAILED_STEP**}, before anything was read back."; } > report/summary.md
+            { echo "### AWS CloudWatch Lambda E2E \`$RUN_ID\`"; echo; echo "❌ Stopped${FAILED_STEP:+ at **$FAILED_STEP**}, before anything was read back."; } >> "$GITHUB_STEP_SUMMARY"
           fi
-          cat report/summary.md >> "$GITHUB_STEP_SUMMARY"
-          # The Linear issue gets the cleanup only when it left something behind.
-          grep -q '❌' out/cleanup.md 2>/dev/null && { echo; cat out/cleanup.md; } >> report/summary.md
           # Rows come back as JSONEachRow with the stored event as a JSON string in raw; render them as a pretty array.
           [ -f out/sample_log.json ] && { echo; echo '<details><summary>sample_log.json</summary>'; echo; echo '```json'; jq -s 'map(if has("raw") then .raw |= (fromjson? // .) else . end)' out/sample_log.json; echo '```'; echo '</details>'; echo; } >> "$GITHUB_STEP_SUMMARY"
           [ -f out/cleanup.md ] && { echo; cat out/cleanup.md; } >> "$GITHUB_STEP_SUMMARY"
@@ -332,6 +333,7 @@ jobs:
         with:
           name: e2e-summary-CloudWatch round trip
           path: report/summary.md
+          if-no-files-found: ignore
           retention-days: 7
           overwrite: true
 
