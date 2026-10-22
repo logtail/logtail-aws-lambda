@@ -177,6 +177,30 @@ jobs:
       - name: "[Test] Read the lines back through the SQL API connection"
         run: |
           set -o pipefail
+          mkdir -p out
+          fail() { FAILURE="$1"; echo "::error::$1"; [ -z "${2:-}" ] || echo "$2"; exit 1; }
+          # Every way this step fails still leaves a summary: what arrived against what was expected.
+          summarize_failure() {
+            local status=$?
+            [ "$status" = 0 ] && return
+            {
+              echo "### AWS CloudWatch Lambda E2E \`$RUN_ID\`"
+              echo
+              echo "❌ ${FAILURE:-The read-back stopped on an error, see the log of this step}"
+              if [ -n "${TOTAL:-}" ]; then
+                echo
+                echo "| read back through \`$CONNECT_HOST\` | arrived | expected |"
+                echo "|---|---|---|"
+                echo "| rows | $TOTAL | 20 |"
+                echo "| level error | $ERRORS | 5 |"
+                echo "| level info | $INFOS | 15 |"
+                echo "| lambda name \`$FUNCTION_NAME\` | $NAMED | 20 |"
+              fi
+              [ -z "${PROBLEMS:-}" ] || { echo; echo '```'; head -20 <<<"$PROBLEMS"; echo '```'; }
+            } > out/summary.md
+            exit "$status"
+          }
+          trap summarize_failure EXIT
           sql() {
             CODE=$(curl -sS -o response.json -w '%{http_code}' -u "$TEST_TEAM_CONNECTION_USERNAME:$TEST_TEAM_CONNECTION_PASSWORD" -H 'Content-Type: plain/text' --data-binary "$1 FORMAT JSONEachRow" "https://$CONNECT_HOST/")
             # A source's collection exists only from its first stored row on; until then the query is "no rows yet".
@@ -196,14 +220,13 @@ jobs:
           while :; do
             counts
             [ "$TOTAL" -ge 20 ] && break
-            [ "$SECONDS" -lt "$DEADLINE" ] || { echo "::error::only $TOTAL of 20 lines arrived within 5 min"; exit 1; }
+            [ "$SECONDS" -lt "$DEADLINE" ] || fail "Only $TOTAL of 20 lines arrived within 5 min"
             sleep 15
           done
           # Everything arrived; a last look 30 s later catches duplicate delivery.
           sleep 30
           counts
-          [ "$TOTAL" = 20 ] && [ "$ERRORS" = 5 ] && [ "$INFOS" = 15 ] && [ "$NAMED" = 20 ] || { echo "::error::unexpected rows: total $TOTAL (20), error $ERRORS (5), info $INFOS (15), lambda name $NAMED (20)"; exit 1; }
-          mkdir -p out
+          [ "$TOTAL" = 20 ] && [ "$ERRORS" = 5 ] && [ "$INFOS" = 15 ] && [ "$NAMED" = 20 ] || fail "Unexpected rows: total $TOTAL (20), error $ERRORS (5), info $INFOS (15), lambda name $NAMED (20)"
           sql "SELECT * FROM remote(${COLLECTION}_logs) WHERE $SINCE AND position(raw, '$MARKER') > 0 ORDER BY dt LIMIT 2" > out/sample_log.json
           # Every stored row, field by field, against the event that produced it (events.json from the write step):
           # the level prefix stripped from the message, the level, the CloudWatch timestamp as dt, and the context
@@ -229,7 +252,7 @@ jobs:
                   ] as $problems
                 | select($problems | length > 0) | "n=\($n): \($problems | join(", "))")
             | .[]' rows.jsonl)
-          [ -z "$PROBLEMS" ] || { echo "::error::stored rows differ from what the Lambda should have produced:"; echo "$PROBLEMS"; exit 1; }
+          [ -z "$PROBLEMS" ] || fail "Stored rows differ from what the Lambda should have produced" "$PROBLEMS"
           {
             echo "### AWS CloudWatch Lambda E2E \`$RUN_ID\`"
             echo
@@ -243,7 +266,11 @@ jobs:
       - name: "[Test] The Lambda logged no errors"
         run: |
           ERRORS=$(aws logs filter-log-events --log-group-name "/aws/lambda/$FUNCTION_NAME" --filter-pattern '?ERROR ?"Task timed out" ?Unhandled' --query 'events[].message' --output text)
-          [ -z "$ERRORS" ] || { echo "::error::the Lambda logged errors:"; echo "$ERRORS"; exit 1; }
+          if [ -n "$ERRORS" ]; then
+            echo "::error::the Lambda logged errors:"; echo "$ERRORS"
+            { echo; echo "❌ The Lambda logged errors:"; echo; echo '```'; head -20 <<<"$ERRORS"; echo '```'; } >> out/summary.md
+            exit 1
+          fi
           echo "no errors in /aws/lambda/$FUNCTION_NAME"
 
       - name: "[Cleanup] Delete this run's resources in Better Stack and AWS (and stale ones)"
@@ -279,15 +306,44 @@ jobs:
 
       - name: "[Report] Job summary"
         if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -f out/summary.md ]; then cat out/summary.md >> "$GITHUB_STEP_SUMMARY"; else echo "No summary, the run failed before verification." >> "$GITHUB_STEP_SUMMARY"; fi
+          mkdir -p report
+          if [ -f out/summary.md ]; then
+            cp out/summary.md report/summary.md
+          else
+            # The read-back writes the summary however it ends, so a step before it failed (or the job was cancelled).
+            FAILED_STEP=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" \
+              --jq ".jobs[] | select(.runner_name == \"$RUNNER_NAME\") | .steps[] | select(.conclusion == \"failure\") | .name" | head -1) || true
+            { echo "### AWS CloudWatch Lambda E2E \`$RUN_ID\`"; echo; echo "❌ Stopped${FAILED_STEP:+ at **$FAILED_STEP**}, before anything was read back."; } > report/summary.md
+          fi
+          cat report/summary.md >> "$GITHUB_STEP_SUMMARY"
+          # The Linear issue gets the cleanup only when it left something behind.
+          grep -q '❌' out/cleanup.md 2>/dev/null && { echo; cat out/cleanup.md; } >> report/summary.md
           # Rows come back as JSONEachRow with the stored event as a JSON string in raw; render them as a pretty array.
           [ -f out/sample_log.json ] && { echo; echo '<details><summary>sample_log.json</summary>'; echo; echo '```json'; jq -s 'map(if has("raw") then .raw |= (fromjson? // .) else . end)' out/sample_log.json; echo '```'; echo '</details>'; echo; } >> "$GITHUB_STEP_SUMMARY"
           [ -f out/cleanup.md ] && { echo; cat out/cleanup.md; } >> "$GITHUB_STEP_SUMMARY"
           true
 
+      - name: "[Report] Hand the summary to the Linear issue"
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-summary-CloudWatch round trip
+          path: report/summary.md
+          retention-days: 7
+          overwrite: true
+
   notify-linear:
     if: ${{ failure() && (github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
     needs: [test]
+    permissions:
+      contents: read
+      actions: read
+      checks: read
     uses: ./.github/workflows/notify_linear_failure.yml
+    with:
+      test_name: AWS Lambda via CloudWatch
+      job_summaries: true
     secrets: inherit
