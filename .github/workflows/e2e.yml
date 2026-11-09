@@ -85,6 +85,12 @@ jobs:
           echo "RUNTIME=$RUNTIME" >> "$GITHUB_ENV"
           echo "docs: $ZIP_URL on $RUNTIME_LABEL ($RUNTIME), x86_64"
 
+      - name: "[Setup] AWS credentials (OIDC)"
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
       - name: "[Setup] The Lambda ZIP: built from this checkout, or the released one on the schedule"
         run: |
           if [ -n "$ZIP_URL_OVERRIDE" ]; then
@@ -112,12 +118,6 @@ jobs:
           echo "RELEASE_TAG=${RELEASE_TAG:-unknown}" >> "$GITHUB_ENV"
           echo "CLIENT_VERSION=$CLIENT_VERSION" >> "$GITHUB_ENV"
           echo "logtail-aws-lambda ${RELEASE_TAG:-unknown} with @logtail/node $CLIENT_VERSION, $(stat -c %s logtail-aws-lambda.zip) bytes from $ZIP_FROM"
-
-      - name: "[Setup] AWS credentials (OIDC)"
-        uses: aws-actions/configure-aws-credentials@v5
-        with:
-          role-to-assume: ${{ env.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
 
       - name: "[Setup] Create AWS CloudWatch source"
         run: |
